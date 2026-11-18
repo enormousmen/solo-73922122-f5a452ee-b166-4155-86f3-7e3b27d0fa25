@@ -1,0 +1,15 @@
+services:
+  classifier:
+    build: .
+    image: microbatch-classifier:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Spec limits (defaults already match the spec):
+      MAX_CAPACITY: "16"      # max images queued or computing
+      BATCH_SIZE: "4"         # max images per batch
+      BATCH_WAIT_MS: "50"     # idle model waits at most 50 ms to fill a batch
+      # Demo knob: simulate slow inference (ms). Submit/query/cancel stay
+      # responsive regardless. Set e.g. "2000" to see the effect.
+      INFERENCE_DELAY_MS: "0"
+    restart: unless-stopped
