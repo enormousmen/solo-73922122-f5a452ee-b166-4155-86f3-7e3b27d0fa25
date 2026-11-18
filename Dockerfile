@@ -18,10 +18,12 @@ COPY samples ./samples
 #   BATCH_SIZE=4           max images per batch
 #   BATCH_WAIT_MS=50       idle model waits at most this long to fill a batch
 #   INFERENCE_DELAY_MS=0   artificial delay to demo slow inference
+#   SAMPLES_DIR=/srv/samples  bundled images used by POST /probes
 ENV MAX_CAPACITY=16 \
     BATCH_SIZE=4 \
     BATCH_WAIT_MS=50 \
-    INFERENCE_DELAY_MS=0
+    INFERENCE_DELAY_MS=0 \
+    SAMPLES_DIR=/srv/samples
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

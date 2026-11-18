@@ -5,20 +5,23 @@ Endpoints
 POST /predict                 submit an image + deadline_ms (from acceptance)
 GET  /orders/{order_id}       query status / result by order id
 POST /orders/{order_id}/cancel  cancel a queued or in-flight order
+POST /probes                  time the fixed model on sample batches of 1, 2, 4
 GET  /stats                   capacity and state counters (demo/observability)
 GET  /health                  liveness
 Interactive docs are served at /docs (Swagger UI).
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from .config import Settings
-from .engine import COMPLETED, BatchEngine, Order
+from .engine import COMPLETED, PROBE_BATCH_SIZES, BatchEngine, Order
 from .preprocessing import preprocess
+from .samples import SampleLoadError, load_sample_tensors
 
 
 def order_view(o: Order) -> dict:
@@ -51,12 +54,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Micro-batch Image Classifier",
-        version="1.0.0",
+        version="1.1.0",
         description=(
             "Time-limited image classification for multiple cameras. "
             "Single-process micro-batching: at most 16 queued/in-flight images, "
             "batches of up to 4, idle model waits up to 50 ms to fill a batch, "
-            "one batch infers at a time. Cancelled/expired orders never yield results."
+            "one batch infers at a time. Cancelled/expired orders never yield results. "
+            "POST /probes time-trials the fixed model on sample batches of 1, 2 and 4 "
+            "images on the same compute channel, without creating orders or using capacity."
         ),
         lifespan=lifespan,
     )
@@ -96,6 +101,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if order.state == COMPLETED:
             raise HTTPException(409, "order already completed; cannot cancel")
         return order_view(order)
+
+    @app.post("/probes", status_code=200)
+    async def create_probe():
+        """Time the fixed model on sample-image batches of 1, 2 and 4.
+
+        The bundled samples are preprocessed exactly like `/predict` uploads.
+        Probes share the single compute channel with regular inference:
+        accepted pending orders are processed first, a running batch is never
+        preempted, and probes create no orders and consume no capacity slot.
+        Only one probe at a time is allowed (409 otherwise); after a failure
+        or client disconnect the probe can simply be retried.
+        """
+        # Fast rejection while another probe is running. The engine re-checks
+        # atomically inside start_probe, so a concurrent pair cannot both win.
+        if engine.probe_active():
+            raise HTTPException(409, "another probe is already running; retry after it finishes")
+
+        try:
+            sample_tensors = load_sample_tensors(
+                settings.samples_dir, min_images=max(PROBE_BATCH_SIZES)
+            )
+        except SampleLoadError as exc:
+            raise HTTPException(500, f"probe unavailable: {exc}") from exc
+
+        future = engine.start_probe(sample_tensors, PROBE_BATCH_SIZES)
+        if future is None:
+            # Lost a near-simultaneous race with another probe.
+            raise HTTPException(409, "another probe is already running; retry after it finishes")
+
+        try:
+            return await future
+        except asyncio.CancelledError:
+            # Client went away: tell the worker to abandon the probe so the
+            # next POST /probes can start immediately after the current
+            # (uninterruptible) compute finishes.
+            engine.cancel_probe()
+            raise
+        except Exception as exc:
+            # The probe slot is already released by the engine, so the client
+            # may retry immediately with another POST /probes.
+            raise HTTPException(500, f"probe failed: {exc}") from exc
 
     @app.get("/stats")
     async def stats():

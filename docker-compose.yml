@@ -12,4 +12,6 @@ services:
       # Demo knob: simulate slow inference (ms). Submit/query/cancel stay
       # responsive regardless. Set e.g. "2000" to see the effect.
       INFERENCE_DELAY_MS: "0"
+      # Bundled sample images used by POST /probes for batch-size trials.
+      SAMPLES_DIR: "/srv/samples"
     restart: unless-stopped
